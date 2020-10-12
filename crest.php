@@ -47,6 +47,7 @@ class CRest
                     'application_token' => htmlspecialchars($_REQUEST['APP_SID']),
                     'refresh_token' => htmlspecialchars($_REQUEST['REFRESH_ID']),
                     'domain' => htmlspecialchars($_REQUEST['DOMAIN']),
+                    'member_id' => htmlspecialchars($_REQUEST['member_id']),
                     'client_endpoint' => 'https://' . htmlspecialchars($_REQUEST['DOMAIN']) . '/rest/',
                 ],
                 true
@@ -64,6 +65,7 @@ class CRest
     }
 
     /**
+     * @var $memberId string
      * @var $arParams array
      * $arParams = [
      *      'method'    => 'some rest method',
@@ -72,7 +74,7 @@ class CRest
      * @return mixed array|string|boolean curl-return or error
      *
      */
-    protected static function callCurl($arParams)
+    protected static function callCurl($memberId, $arParams)
     {
         if(!function_exists('curl_init'))
         {
@@ -81,7 +83,8 @@ class CRest
                 'error_information' => 'need install curl lib'
             ];
         }
-        $arSettings = static::getAppSettings();
+        $arSettings = static::getAppSettings($memberId);
+
         if($arSettings !== false)
         {
             if(isset($arParams[ 'this_auth' ]) && $arParams[ 'this_auth' ] == 'Y')
@@ -97,7 +100,7 @@ class CRest
                 }
             }
 
-            $sPostFields = http_build_query($arParams[ 'params' ]);
+            $sPostFields = http_build_query($arParams['params']);
 
             try
             {
@@ -140,7 +143,7 @@ class CRest
                 {
                     if($result[ 'error' ] == 'expired_token' && empty($arParams[ 'this_auth' ]))
                     {
-                        $result = static::GetNewAuth($arParams);
+                        $result = static::GetNewAuth($memberId, $arParams);
                     }
                     else
                     {
@@ -216,12 +219,13 @@ class CRest
     /**
      * Generate a request for callCurl()
      *
+     * @var $memberId string
      * @var $method string
      * @var $params array method params
      * @return mixed array|string|boolean curl-return or error
      */
 
-    public static function call($method, $params = [])
+    public static function call($memberId, $method, $params = [])
     {
         $arPost = [
             'method' => $method,
@@ -232,8 +236,7 @@ class CRest
             $arPost[ 'params' ] = static::changeEncoding($arPost[ 'params' ]);
         }
 
-        $result = static::callCurl($arPost);
-        return $result;
+        return static::callCurl($memberId, $arPost);
     }
 
     /**
@@ -301,15 +304,16 @@ class CRest
     /**
      * Getting a new authorization and sending a request for the 2nd time
      *
+     * @var $memberId string
      * @var $arParams array request when authorization error returned
      * @return array query result from $arParams
      *
      */
 
-    private static function GetNewAuth($arParams)
+    public static function GetNewAuth($memberId, $arParams)
     {
         $result = [];
-        $arSettings = static::getAppSettings();
+        $arSettings = static::getAppSettings($memberId);
         if($arSettings !== false)
         {
             $arParamsAuth = [
@@ -322,7 +326,7 @@ class CRest
                         'refresh_token' => $arSettings[ "refresh_token" ],
                     ]
             ];
-            $newData = static::callCurl($arParamsAuth);
+            $newData = static::callCurl($memberId, $arParamsAuth);
             if(isset($newData[ 'C_REST_CLIENT_ID' ]))
             {
                 unset($newData[ 'C_REST_CLIENT_ID' ]);
@@ -338,7 +342,7 @@ class CRest
             if(static::setAppSettings($newData))
             {
                 $arParams[ 'this_auth' ] = 'N';
-                $result = static::callCurl($arParams);
+                $result = static::callCurl($memberId, $arParams);
             }
         }
         return $result;
@@ -355,7 +359,7 @@ class CRest
         $return = false;
         if(is_array($arSettings))
         {
-            $oldData = static::getAppSettings();
+            $oldData = static::getAppSettings(false);
             if($isInstall != true && !empty($oldData) && is_array($oldData))
             {
                 $arSettings = array_merge($oldData, $arSettings);
@@ -366,60 +370,53 @@ class CRest
     }
 
     /**
+     * @var $memberId string
      * @return mixed setting application for query
      */
 
-    private static function getAppSettings()
+    private static function getAppSettings($memberId)
     {
-        if(defined("C_REST_WEB_HOOK_URL") && !empty(C_REST_WEB_HOOK_URL))
+        $arData = static::getSettingData($memberId);
+        $isCurrData = false;
+        if(
+            !empty($arData['access_token']) &&
+            !empty($arData['domain']) &&
+            !empty($arData['refresh_token']) &&
+            !empty($arData['application_token']) &&
+            !empty($arData['client_endpoint'])
+        )
         {
-            $arData = [
-                'client_endpoint' => C_REST_WEB_HOOK_URL,
-                'is_web_hook'     => 'Y'
-            ];
             $isCurrData = true;
-        }
-        else
-        {
-            $arData = static::getSettingData();
-            $isCurrData = false;
-            if(
-                !empty($arData[ 'access_token' ]) &&
-                !empty($arData[ 'domain' ]) &&
-                !empty($arData[ 'refresh_token' ]) &&
-                !empty($arData[ 'application_token' ]) &&
-                !empty($arData[ 'client_endpoint' ])
-            )
-            {
-                $isCurrData = true;
-            }
         }
 
         return ($isCurrData) ? $arData : false;
     }
 
     /**
-     * Can overridden this method to change the data storage location.
-     *
+     * @var $memberId string
      * @return array setting for getAppSettings()
      */
 
-    protected static function getSettingData()
+    protected static function getSettingData($memberId)
     {
-        $return = [];
-        if(file_exists(__DIR__ . '/settings.json'))
+        $connection = \Bitrix\Main\Application::getConnection();
+        $sqlHelper = $connection->getSqlHelper();
+        $arFields = $connection->query("SELECT * FROM app_birthday_auth_token_user WHERE member_id = '".$sqlHelper->forSql($memberId, 50)."'")->fetch();
+
+        /*$db = new YNDb(__DIR__.'/libs/database/data/');
+        $rsFields = $db->select('auth_token_user', ['col' => 'id, member_id, access_token, client_endpoint, domain, refresh_token, application_token', 'cond' => 'member_id = '.$memberId, 'limit' => 1]);
+        $arFields = current($rsFields);*/
+
+        if(defined("C_REST_CLIENT_ID") && !empty(C_REST_CLIENT_ID))
         {
-            $return = static::expandData(file_get_contents(__DIR__ . '/settings.json'));
-            if(defined("C_REST_CLIENT_ID") && !empty(C_REST_CLIENT_ID))
-            {
-                $return['C_REST_CLIENT_ID'] = C_REST_CLIENT_ID;
-            }
-            if(defined("C_REST_CLIENT_SECRET") && !empty(C_REST_CLIENT_SECRET))
-            {
-                $return['C_REST_CLIENT_SECRET'] = C_REST_CLIENT_SECRET;
-            }
+            $arFields['C_REST_CLIENT_ID'] = C_REST_CLIENT_ID;
         }
-        return $return;
+        if(defined("C_REST_CLIENT_SECRET") && !empty(C_REST_CLIENT_SECRET))
+        {
+            $arFields['C_REST_CLIENT_SECRET'] = C_REST_CLIENT_SECRET;
+        }
+
+        return $arFields;
     }
 
     /**
@@ -508,7 +505,67 @@ class CRest
 
     protected static function setSettingData($arSettings)
     {
-        return  (boolean)file_put_contents(__DIR__ . '/settings.json', static::wrapData($arSettings));
+        self::log($arSettings);
+
+        $connection = \Bitrix\Main\Application::getConnection();
+        $sqlHelper = $connection->getSqlHelper();
+        $arUser = $connection->query("SELECT * FROM app_birthday_auth_token_user WHERE member_id = '".$sqlHelper->forSql($arSettings['member_id'], 50)."'")->fetch();
+
+        /*$db = new YNDb(__DIR__.'/libs/database/data/');
+        $arUser = $db->select('auth_token_user', ['col' => 'id, member_id', 'cond' => 'member_id = '.$arSettings['member_id'], 'limit' => 1]);*/
+
+        $arColumns = ['access_token', 'client_endpoint', 'member_id', 'refresh_token', 'server_endpoint', 'application_token', 'domain'];
+        $sqlFields = [];
+        $sqlValues = [];
+        $sqlQuery = [];
+        foreach ($arSettings as $code => &$value) {
+            switch ($code) {
+                case 'birthday_type':
+                case 'users':
+                    $value = json_encode($value, JSON_UNESCAPED_UNICODE);
+                    break;
+            }
+            if (in_array($code, $arColumns)) {
+                $sqlFields[] = $code;
+                $sqlValues[] = "'".$value."'";
+                $sqlQuery[] = $code." = '".$value."'";
+            }
+        }
+
+        if (!$arUser) {
+            //$sqlFields = "access_token, client_endpoint, member_id, refresh_token, server_endpoint, application_token, domain";
+            //$sqlValues = "'".$arSettings['access_token']."', '".$arSettings['client_endpoint']."', '".$arSettings['member_id']."', '".$arSettings['refresh_token']."', '".$arSettings['domain']."', '".$arSettings['application_token']."', '".$arSettings['domain']."'";
+
+            $sqlFields = implode(',', $sqlFields);
+            $sqlValues = implode(',', $sqlValues);
+            $result = $connection->query("INSERT INTO app_birthday_auth_token_user (".$sqlFields.") VALUES (".$sqlValues.")");
+
+            /*$result = $db->insert(TABLE, [
+                'access_token' => $arSettings['access_token'],
+                'client_endpoint' => $arSettings['client_endpoint'],
+                'member_id' => $arSettings['member_id'],
+                'refresh_token' => $arSettings['refresh_token'],
+                'server_endpoint' => $arSettings['domain'],
+                'status' => '',
+                'application_token' => $arSettings['application_token'],
+                'domain' => $arSettings['domain']
+            ]);*/
+        } else {
+            $sqlQuery = implode(',', $sqlQuery);
+            $result = $connection->query("UPDATE app_birthday_auth_token_user SET ".$sqlQuery." WHERE member_id = '".$arSettings['member_id']."'");
+
+            /*$result = $db -> update(TABLE, ['cond' => 'member_id = '.$arSettings['member_id']], [
+                'access_token' => $arSettings['access_token'],
+                'client_endpoint' => $arSettings['client_endpoint'],
+                'refresh_token' => $arSettings['refresh_token'],
+                'server_endpoint' => $arSettings['domain'],
+                'status' => '',
+                'application_token' => $arSettings['application_token'],
+                'domain' => $arSettings['domain']
+            ]);*/
+        }
+
+        return  (boolean)$result;
     }
 
     /**
@@ -611,5 +668,19 @@ class CRest
         }
 
         return $return;
+    }
+
+    public static function log($data)
+    {
+        $log = '[' . date('D M d H:i:s Y', time()) . '] ';
+        $log .= json_encode($data, JSON_UNESCAPED_UNICODE);
+        $log .= "\n";
+        file_put_contents(dirname(__FILE__) . "/logs/log_". date('d_m_Y') .".log", $log, FILE_APPEND);
+    }
+
+    public static function dump($var) {
+        echo '<pre>';
+        var_dump($var);
+        echo '</pre>';
     }
 }
